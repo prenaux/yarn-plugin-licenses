@@ -182,7 +182,7 @@ export const getSortedPackages = async (
  * @returns {LicenseInfo} License information
  */
 export const getLicenseInfoFromManifest = (manifest: ManifestWithLicenseInfo): LicenseInfo => {
-  const { license, licenses, repository, homepage, author } = manifest
+  const { name, version, license, licenses, repository, homepage, author } = manifest
 
   const getNormalizedLicense = () => {
     if (license) {
@@ -192,17 +192,32 @@ export const getLicenseInfoFromManifest = (manifest: ManifestWithLicenseInfo): L
       if (licenses.length === 1) {
         return normalizeManifestLicenseValue(licenses[0])
       } else if (licenses.length) {
-        return `(${licenses.map(normalizeManifestLicenseValue).join(' OR ')})`
+        return `${licenses.map(normalizeManifestLicenseValue).join(';')}`
       }
     }
     return UNKNOWN_LICENSE
   }
 
+  let l = getNormalizedLicense();
+  if (l && l.indexOf(" AND ") >= 0) {
+    l = l.trim();
+    if (l.startsWith("(")) {
+      l = l.substr(1);
+    }
+    if (l.endsWith(")")) {
+      l = l.substr(0,l.length-1);
+    }
+    l = l.split(" AND ").join(";");
+  }
+
   return {
-    license: getNormalizedLicense(),
+    moduleName: name + "@" + version,
+    name: name,
+    version: version,
     url: repository?.url || homepage,
-    vendorName: author?.name,
-    vendorUrl: homepage || author?.url
+    license: l,
+    vendorName: (typeof author === "string") ? author : author?.name,
+    vendorUrl: homepage || author?.url,
   }
 }
 
@@ -247,12 +262,14 @@ const stringifyKeyValue = (key: string, value: string, json: boolean) => {
  * @param {boolean} production - Whether to exclude devDependencies
  * @returns {string} License disclaimer
  */
-export const getDisclaimer = async (project: Project, recursive: boolean, production: boolean): Promise<string> => {
+export const getDisclaimer = async (project: Project, recursive: boolean, production: boolean) => {
   const sortedPackages = await getSortedPackages(project, recursive, production)
 
   const linker = resolveLinker(project.configuration.get('nodeLinker'))
 
-  const manifestsByLicense: Map<string, Map<string, ManifestWithLicenseInfo>> = new Map()
+  let disclaimers = [];
+  let entries = [];
+  let entryMap = {};
 
   for (const pkg of sortedPackages.values()) {
     const packagePath = await linker.getPackagePath(project, pkg)
@@ -274,58 +291,35 @@ export const getDisclaimer = async (project: Project, recursive: boolean, produc
       )
     })
 
-    if (!licenseFilename) continue
-
-    const licenseText = await linker.fs.readFilePromise(ppath.join(packagePath, licenseFilename), 'utf8')
-
-    const noticeFilename = files.find((filename): boolean => {
-      const lower = filename.toLowerCase()
-      return lower === 'notice' || lower.startsWith('notice.')
-    })
-
-    let noticeText
-    if (noticeFilename) {
-      noticeText = await linker.fs.readFilePromise(ppath.join(packagePath, noticeFilename), 'utf8')
+    const entry = getLicenseInfoFromManifest(packageManifest)
+    if (entry.moduleName in entryMap) {
+      continue;
     }
 
-    const licenseKey = noticeText ? `${licenseText}\n\nNOTICE\n\n${noticeText}` : licenseText
+    let disclaimer = JSON.stringify(entry, null, '  ') + '\n'
+    if (licenseFilename) {
+      const licenseText = await linker.fs.readFilePromise(ppath.join(packagePath, licenseFilename), 'utf8')
 
-    const manifestMap = manifestsByLicense.get(licenseKey)
-    if (!manifestMap) {
-      manifestsByLicense.set(licenseKey, new Map([[packageManifest.name, packageManifest]]))
-    } else {
-      manifestMap.set(packageManifest.name, packageManifest)
-    }
-  }
+      const noticeFilename = files.find((filename): boolean => {
+        const lower = filename.toLowerCase()
+        return lower === 'notice' || lower.startsWith('notice.')
+      })
 
-  let disclaimer =
-    'THE FOLLOWING SETS FORTH ATTRIBUTION NOTICES FOR THIRD PARTY SOFTWARE THAT MAY BE CONTAINED ' +
-    `IN PORTIONS OF THE ${String(project.topLevelWorkspace.manifest.raw.name)
-      .toUpperCase()
-      .replace(/-/g, ' ')} PRODUCT.\n\n`
-
-  for (const [licenseKey, packageMap] of manifestsByLicense.entries()) {
-    disclaimer += '-----\n\n'
-
-    const names = []
-    const urls = []
-    for (const { name, repository } of packageMap.values()) {
-      names.push(name)
-      if (repository?.url) {
-        urls.push(packageMap.size === 1 ? repository.url : `${repository.url} (${name})`)
+      let noticeText
+      if (noticeFilename) {
+        noticeText = await linker.fs.readFilePromise(ppath.join(packagePath, noticeFilename), 'utf8')
       }
+
+      const licenseKey = noticeText ? `${licenseText}\n\nNOTICE\n\n${noticeText}` : licenseText
+      disclaimer += `\n${licenseKey.trim()}\n`
     }
 
-    const heading = []
-    heading.push(`The following software may be included in this product: ${names.join(', ')}.`)
-    if (urls.length > 0) {
-      heading.push(`A copy of the source code may be downloaded from ${urls.join(', ')}.`)
-    }
-    heading.push('This software contains the following license and notice below:')
+    disclaimers.push(disclaimer);
 
-    disclaimer += `${heading.join(' ')}\n\n`
-    disclaimer += `${licenseKey.trim()}\n\n`
+    entry.disclaimer = disclaimer;
+    entries.push(entry);
+    entryMap[entry.moduleName] = entry;
   }
 
-  return disclaimer
+  return {disclaimers,entries}
 }

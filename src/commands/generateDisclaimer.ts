@@ -2,6 +2,8 @@ import { WorkspaceRequiredError } from '@yarnpkg/cli'
 import { CommandContext, Configuration, Project } from '@yarnpkg/core'
 import { Command, Usage, Option } from 'clipanion'
 import { getDisclaimer } from '../utils'
+import { writeFileSync, mkdirSync } from 'fs'
+import { join, dirname } from 'path'
 
 export class LicensesGenerateDisclaimerCommand extends Command<CommandContext> {
   static paths = [[`licenses`, `generate-disclaimer`]]
@@ -12,6 +14,22 @@ export class LicensesGenerateDisclaimerCommand extends Command<CommandContext> {
 
   production = Option.Boolean(`--production`, false, {
     description: `Exclude development dependencies`
+  })
+
+  outputStdout = Option.Boolean(`--stdout`, false, {
+    description: `Output the unified licenses in stdout`
+  })
+
+  outputFile = Option.String(`--outputFile`, null, {
+    description: `Output the unified licenses in a file`
+  })
+
+  outputCsv = Option.String(`--outputCsv`, null, {
+    description: `Specify where to output a csv that contains all the`
+  })
+
+  outputDir = Option.String(`--outputDir`, null, {
+    description: `Output split license files in the specified directory`
   })
 
   static usage: Usage = Command.Usage({
@@ -40,7 +58,39 @@ export class LicensesGenerateDisclaimerCommand extends Command<CommandContext> {
 
     await project.restoreInstallState()
 
-    const disclaimer = await getDisclaimer(project, this.recursive, this.production)
-    this.context.stdout.write(disclaimer)
+    const {disclaimers,entries} = await getDisclaimer(project, this.recursive, this.production)
+    if (this.outputCsv?.length) {
+      let csv = '"module name","name","version","repository","url","licenses"\n';
+      for (const entry of entries) {
+        csv += JSON.stringify(entry.moduleName) + ',';
+        csv += JSON.stringify(entry.name) + ',';
+        csv += JSON.stringify(entry.version) + ',';
+        csv += JSON.stringify(entry.url) + ',';
+        csv += '"",';
+        csv += JSON.stringify(entry.license) + '\n';
+      }
+      mkdirSync(dirname(this.outputCsv), { recursive: true });
+      writeFileSync(this.outputCsv, csv);
+    }
+
+    if (this.outputDir?.length) {
+      for (const entry of entries) {
+        let targetFile = join(this.outputDir, entry.name + "-" + entry.version, "npm-license.txt");
+        mkdirSync(dirname(targetFile), { recursive: true });
+        writeFileSync(targetFile, entry.disclaimer);
+      }
+    }
+
+    let allDisclaimers = disclaimers.join("\n------------\n\n");
+    allDisclaimers += "\n";
+
+    if (this.outputFile) {
+      mkdirSync(dirname(this.outputFile), { recursive: true });
+      writeFileSync(this.outputFile, allDisclaimers);
+    }
+
+    if (this.outputStdout) {
+      this.context.stdout.write(allDisclaimers);
+    }
   }
 }
