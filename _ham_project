@@ -1,0 +1,12 @@
+#!/bin/bash
+if [[ -z $HAM_PROJECT_DIR ]]; then
+    echo "E/HAM_PROJECT_DIR not set !"
+    return 1
+fi
+
+echo "I/HAM_PROJECT_DIR: '$HAM_PROJECT_DIR'"
+
+toolset_import_list repos nodejs
+
+toolset_info
+update_prompt
